@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BayRex APK - Скачать приложения для Android бесплатно</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="icon" type="image/x-icon" href="https://cdn-icons-png.flaticon.com/512/3067/3067256.png">
+</head>
+<body>
+    <!-- Уведомление -->
+    <div id="notification" class="notification">
+        <i class="fas fa-check-circle"></i>
+        <span id="notificationText"></span>
+    </div>
+
+    <!-- Загрузка -->
+    <div id="loading" class="loading-overlay">
+        <div class="loading-spinner"></div>
+        <p>Загрузка...</p>
+    </div>
+
+    <!-- Header -->
+    <header>
+        <div class="container header-content">
+            <div class="logo">
+                <i class="fas fa-download logo-icon"></i>
+                <div>
+                    <h1>BayRex <span>APK</span></h1>
+                    <p class="logo-subtitle">Магазин Android приложений</p>
+                </div>
+            </div>
+            
+            <div class="header-controls">
+                <div class="search-container">
+                    <i class="fas fa-search search-icon"></i>
+                    <input type="text" id="searchInput" class="search-input" placeholder="Поиск приложений...">
+                </div>
+                
+                <div class="admin-controls">
+                    <button id="loginBtn" class="admin-btn">
+                        <i class="fas fa-sign-in-alt"></i> Вход
+                    </button>
+                    <button id="addAppBtn" class="admin-btn" style="display: none;">
+                        <i class="fas fa-plus-circle"></i> Добавить
+                    </button>
+                    <button id="adminPanelBtn" class="admin-btn" style="display: none;">
+                        <i class="fas fa-cogs"></i> Панель
+                    </button>
+                    <button id="logoutBtn" class="admin-btn" style="display: none;">
+                        <i class="fas fa-sign-out-alt"></i> Выйти
+                    </button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Категории -->
+    <nav class="categories">
+        <div class="container">
+            <div class="categories-list" id="categoriesList">
+                <!-- Категории загружаются через JS -->
+            </div>
+        </div>
+    </nav>
+
+    <!-- Основной контент -->
+    <main class="container">
+        <!-- Приложения -->
+        <section id="appsSection">
+            <div class="section-header">
+                <h2 class="section-title">
+                    <i class="fas fa-mobile-alt"></i> 
+                    <span id="sectionTitle">Все приложения</span>
+                    <span class="badge" id="appCount">0</span>
+                </h2>
+                <div class="section-controls">
+                    <button class="filter-btn active" data-filter="all">
+                        <i class="fas fa-th"></i> Все
+                    </button>
+                    <button class="filter-btn" data-filter="featured">
+                        <i class="fas fa-star"></i> Рекомендуемые
+                    </button>
+                    <select id="categoryFilter" class="category-select">
+                        <option value="">Все категории</option>
+                    </select>
+                    <select id="sortSelect" class="sort-select">
+                        <option value="newest">Сначала новые</option>
+                        <option value="popular">Популярные</option>
+                        <option value="name">По названию</option>
+                    </select>
+                </div>
+            </div>
+            
+            <div class="apps-grid" id="appsGrid">
+                <!-- Приложения загружаются через JS -->
+            </div>
+            
+            <div id="emptyState" class="empty-state">
+                <i class="fas fa-box-open"></i>
+                <h3>Приложений не найдено</h3>
+                <p>Попробуйте изменить параметры поиска или фильтрации</p>
+            </div>
+            
+            <div class="pagination" id="pagination" style="display: none;">
+                <button id="prevPage" class="pagination-btn" disabled>
+                    <i class="fas fa-chevron-left"></i> Назад
+                </button>
+                <span class="page-info" id="pageInfo">Страница 1 из 1</span>
+                <button id="nextPage" class="pagination-btn">
+                    Вперед <i class="fas fa-chevron-right"></i>
+                </button>
+            </div>
+        </section>
+
+        <!-- Админ панель (скрыта по умолчанию) -->
+        <section id="adminPanel" class="admin-panel" style="display: none;">
+            <div class="admin-header">
+                <h2 class="section-title">
+                    <i class="fas fa-cogs"></i> Панель управления
+                    <span class="badge" id="adminAppCount">0</span>
+                </h2>
+                <div class="admin-actions">
+                    <button id="closeAdminPanelBtn" class="btn-secondary">
+                        <i class="fas fa-arrow-left"></i> К приложениям
+                    </button>
+                    <button id="refreshAdminBtn" class="btn-secondary">
+                        <i class="fas fa-sync-alt"></i> Обновить
+                    </button>
+                </div>
+            </div>
+            
+            <div class="stats-cards">
+                <div class="stat-card">
+                    <div class="stat-icon primary">
+                        <i class="fas fa-mobile-alt"></i>
+                    </div>
+                    <div class="stat-info">
+                        <h3 id="totalAppsStat">0</h3>
+                        <p>Всего приложений</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon success">
+                        <i class="fas fa-download"></i>
+                    </div>
+                    <div class="stat-info">
+                        <h3 id="totalDownloadsStat">0</h3>
+                        <p>Всего скачиваний</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon warning">
+                        <i class="fas fa-star"></i>
+                    </div>
+                    <div class="stat-info">
+                        <h3 id="featuredAppsStat">0</h3>
+                        <p>Рекомендуемые</p>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-icon info">
+                        <i class="fas fa-database"></i>
+                    </div>
+                    <div class="stat-info">
+                        <h3 id="totalSizeStat">0 MB</h3>
+                        <p>Общий размер</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="admin-apps-list" id="adminAppsList">
+                <!-- Список приложений для админа -->
+            </div>
+        </section>
+
+        <!-- Статистика на главной -->
+        <section class="stats-section" id="statsSection">
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <i class="fas fa-download stat-icon"></i>
+                    <div>
+                        <h3 id="totalDownloads">0</h3>
+                        <p>Скачиваний всего</p>
+                    </div>
+                </div>
+                <div class="stat-item">
+                    <i class="fas fa-mobile-alt stat-icon"></i>
+                    <div>
+                        <h3 id="totalApps">0</h3>
+                        <p>Приложений</p>
+                    </div>
+                </div>
+                <div class="stat-item">
+                    <i class="fas fa-users stat-icon"></i>
+                    <div>
+                        <h3>Без регистрации</h3>
+                        <p>Скачивайте свободно</p>
+                    </div>
+                </div>
+                <div class="stat-item">
+                    <i class="fas fa-shield-alt stat-icon"></i>
+                    <div>
+                        <h3>Безопасно</h3>
+                        <p>Проверенные APK</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Модальные окна -->
+    
+    <!-- Модалка входа -->
+    <div id="loginModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">
+                    <i class="fas fa-sign-in-alt"></i> Вход для администратора
+                </h3>
+                <button class="close-modal" id="closeLoginModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label" for="username">
+                        <i class="fas fa-user"></i> Имя пользователя
+                    </label>
+                    <input type="text" id="username" class="form-input" 
+                           placeholder="@BayRex" value="@BayRex" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="password">
+                        <i class="fas fa-lock"></i> Пароль
+                    </label>
+                    <input type="password" id="password" class="form-input" 
+                           placeholder="Введите пароль" value="admin123" required>
+                    <div class="form-hint">
+                        <i class="fas fa-info-circle"></i> Пароль по умолчанию: admin123
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button id="submitLogin" class="btn-primary">
+                        <i class="fas fa-sign-in-alt"></i> Войти
+                    </button>
+                    <button id="cancelLogin" class="btn-secondary">Отмена</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модалка добавления/редактирования приложения -->
+    <div id="appModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title" id="modalAppTitle">
+                    <i class="fas fa-plus-circle"></i> Добавить новое приложение
+                </h3>
+                <button class="close-modal" id="closeAppModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="appForm">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label" for="appName">
+                                <i class="fas fa-heading"></i> Название приложения *
+                            </label>
+                            <input type="text" id="appName" class="form-input" 
+                                   placeholder="Например: WhatsApp Messenger" required>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="appVersion">
+                                <i class="fas fa-code-branch"></i> Версия
+                            </label>
+                            <input type="text" id="appVersion" class="form-input" 
+                                   placeholder="1.0.0" value="1.0">
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label" for="appDescription">
+                            <i class="fas fa-align-left"></i> Описание *
+                        </label>
+                        <textarea id="appDescription" class="form-input" rows="4" 
+                                  placeholder="Опишите приложение, его функции и особенности..." 
+                                  required></textarea>
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label" for="appCategory">
+                                <i class="fas fa-folder"></i> Категория
+                            </label>
+                            <select id="appCategory" class="form-input">
+                                <option value="Social">Социальные</option>
+                                <option value="Tools">Инструменты</option>
+                                <option value="Games">Игры</option>
+                                <option value="Productivity">Продуктивность</option>
+                                <option value="Entertainment">Развлечения</option>
+                                <option value="Education">Образование</option>
+                                <option value="Other" selected>Другое</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">
+                                <i class="fas fa-star"></i> Рекомендовать
+                            </label>
+                            <div class="checkbox-group">
+                                <input type="checkbox" id="appFeatured" class="checkbox">
+                                <label for="appFeatured" class="checkbox-label">
+                                    Показать в рекомендуемых
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label" for="appIcon">
+                                <i class="fas fa-image"></i> Иконка приложения
+                            </label>
+                            <div class="file-input-container">
+                                <input type="file" id="appIcon" class="file-input" 
+                                       accept="image/*" aria-label="Выберите иконку">
+                                <div class="file-input-label" id="iconLabel">
+                                    <i class="fas fa-upload"></i> 
+                                    <span>Выберите файл иконки</span>
+                                </div>
+                            </div>
+                            <div class="form-hint">Рекомендуемый размер: 512x512px</div>
+                            <img id="iconPreview" class="preview-icon" 
+                                 alt="Предпросмотр иконки" style="display: none;">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label class="form-label" for="appFile">
+                                <i class="fas fa-file-archive"></i> APK файл *
+                            </label>
+                            <div class="file-input-container">
+                                <input type="file" id="appFile" class="file-input" 
+                                       accept=".apk" aria-label="Выберите APK файл" required>
+                                <div class="file-input-label" id="fileLabel">
+                                    <i class="fas fa-upload"></i> 
+                                    <span>Выберите APK файл</span>
+                                </div>
+                            </div>
+                            <div class="form-hint">Максимальный размер: 200MB</div>
+                            <div id="fileInfo" class="file-info">
+                                <div id="fileName">Файл не выбран</div>
+                                <div id="fileSize">-</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <input type="hidden" id="appId">
+                    
+                    <div class="form-actions">
+                        <button type="submit" class="btn-primary" id="submitAppBtn">
+                            <i class="fas fa-save"></i> Добавить приложение
+                        </button>
+                        <button type="button" id="cancelAppBtn" class="btn-secondary">
+                            Отмена
+                        </button>
+                    </div>
+                    
+                    <div class="form-footer">
+                        <p><i class="fas fa-info-circle"></i> Поля помеченные * обязательны для заполнения</p>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модалка подтверждения удаления -->
+    <div id="confirmModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">
+                    <i class="fas fa-exclamation-triangle"></i> Подтверждение
+                </h3>
+                <button class="close-modal" id="closeConfirmModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="confirm-icon">
+                    <i class="fas fa-trash-alt"></i>
+                </div>
+                <h4 id="confirmTitle">Вы уверены, что хотите удалить это приложение?</h4>
+                <p id="confirmMessage">Это действие нельзя отменить. Все файлы приложения будут удалены.</p>
+                <div class="form-actions">
+                    <button id="confirmDeleteBtn" class="btn-danger">
+                        <i class="fas fa-trash-alt"></i> Да, удалить
+                    </button>
+                    <button id="cancelDeleteBtn" class="btn-secondary">Отмена</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer>
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-section">
+                    <div class="logo">
+                        <i class="fas fa-download logo-icon"></i>
+                        <h3>BayRex <span>APK</span></h3>
+                    </div>
+                    <p>Бесплатный магазин Android приложений. Скачивайте без регистрации.</p>
+                    <div class="social-links">
+                        <a href="#" class="social-link"><i class="fab fa-telegram"></i></a>
+                        <a href="#" class="social-link"><i class="fab fa-vk"></i></a>
+                        <a href="#" class="social-link"><i class="fab fa-github"></i></a>
+                    </div>
+                </div>
+                
+                <div class="footer-section">
+                    <h4>Категории</h4>
+                    <ul class="footer-links" id="footerCategories">
+                        <!-- Загружается через JS -->
+                    </ul>
+                </div>
+                
+                <div class="footer-section">
+                    <h4>Администратору</h4>
+                    <ul class="footer-links">
+                        <li><a href="#" id="footerLoginBtn"><i class="fas fa-sign-in-alt"></i> Вход в панель</a></li>
+                        <li><a href="#" id="footerAddAppBtn" style="display: none;"><i class="fas fa-plus"></i> Добавить приложение</a></li>
+                        <li><a href="#" id="footerStatsBtn"><i class="fas fa-chart-bar"></i> Статистика</a></li>
+                    </ul>
+                </div>
+                
+                <div class="footer-section">
+                    <h4>Информация</h4>
+                    <ul class="footer-links">
+                        <li><a href="#" id="aboutBtn"><i class="fas fa-info-circle"></i> О проекте</a></li>
+                        <li><a href="#" id="contactBtn"><i class="fas fa-envelope"></i> Контакты</a></li>
+                        <li><a href="#" id="helpBtn"><i class="fas fa-question-circle"></i> Помощь</a></li>
+                    </ul>
+                </div>
+            </div>
+            
+            <div class="footer-bottom">
+                <p>&copy; 2025 BayRex APK. Все права защищены.</p>
+                <p class="footer-note">
+                    <i class="fas fa-shield-alt"></i> Все приложения проверяются администратором перед публикацией.
+                </p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="js/main.js"></script>
+</body>
+  </html>
