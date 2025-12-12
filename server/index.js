@@ -23,49 +23,134 @@ app.use(session({
     resave: false,
     saveUninitialized: true,
     cookie: {
-        secure: false,
+        secure: process.env.NODE_ENV === 'production',
         maxAge: 24 * 60 * 60 * 1000
     }
 }));
 
-// Путь для загрузок (на Render используем Persistent Disk)
-const UPLOADS_PATH = process.env.RENDER ? '/var/data/uploads' : 'uploads';
+// Определяем путь для загрузок
+const IS_RENDER = process.env.RENDER || false;
+const UPLOADS_PATH = IS_RENDER ? '/var/data/uploads' : 'uploads';
+
+console.log('🚀 Загрузки будут сохраняться в:', UPLOADS_PATH);
+console.log('🔧 IS_RENDER:', IS_RENDER);
 
 // Создаем папки для загрузок если их нет
 const createUploadDirs = () => {
-    const dirs = [
-        UPLOADS_PATH,
-        path.join(UPLOADS_PATH, 'apks'),
-        path.join(UPLOADS_PATH, 'icons')
-    ];
-    
-    dirs.forEach(dir => {
-        if (!fs.existsSync(dir)) {
-            fs.mkdirSync(dir, { recursive: true });
-            console.log(`✅ Создана папка: ${dir}`);
-        }
-    });
+    try {
+        const dirs = [
+            UPLOADS_PATH,
+            path.join(UPLOADS_PATH, 'apks'),
+            path.join(UPLOADS_PATH, 'icons')
+        ];
+        
+        dirs.forEach(dir => {
+            if (!fs.existsSync(dir)) {
+                // Создаем папку рекурсивно
+                fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
+                console.log(`✅ Создана папка: ${dir}`);
+            } else {
+                console.log(`📁 Папка уже существует: ${dir}`);
+            }
+        });
+    } catch (error) {
+        console.error('❌ Ошибка создания папок:', error.message);
+        console.log('⚠️  Продолжаем без создания папок...');
+    }
 };
 
-createUploadDirs();
+// Проверяем права доступа к папке загрузок
+const checkUploadsAccess = () => {
+    try {
+        // Пытаемся записать тестовый файл
+        const testFile = path.join(UPLOADS_PATH, 'test.txt');
+        fs.writeFileSync(testFile, 'test');
+        fs.unlinkSync(testFile);
+        console.log('✅ Права доступа к папке загрузок: OK');
+        return true;
+    } catch (error) {
+        console.error('❌ Нет прав доступа к папке загрузок:', error.message);
+        
+        // Если это Render и нет прав, пытаемся использовать временную папку
+        if (IS_RENDER) {
+            console.log('🔄 Пытаюсь использовать /tmp/uploads...');
+            const TMP_UPLOADS_PATH = '/tmp/uploads';
+            
+            try {
+                if (!fs.existsSync(TMP_UPLOADS_PATH)) {
+                    fs.mkdirSync(TMP_UPLOADS_PATH, { recursive: true });
+                }
+                // Проверяем права в /tmp
+                const testFile = path.join(TMP_UPLOADS_PATH, 'test.txt');
+                fs.writeFileSync(testFile, 'test');
+                fs.unlinkSync(testFile);
+                
+                // Обновляем путь
+                global.UPLOADS_PATH = TMP_UPLOADS_PATH;
+                console.log('✅ Использую /tmp/uploads для загрузок');
+                return true;
+            } catch (tmpError) {
+                console.error('❌ Нет прав даже в /tmp:', tmpError.message);
+                return false;
+            }
+        }
+        return false;
+    }
+};
+
+// Пытаемся создать папки и проверить доступ
+try {
+    createUploadDirs();
+    
+    if (!checkUploadsAccess()) {
+        console.log('⚠️  Использую временное хранилище в памяти');
+        // Используем временное хранилище в памяти
+        global.USE_MEMORY_STORAGE = true;
+    }
+} catch (error) {
+    console.error('❌ Критическая ошибка инициализации:', error);
+    global.USE_MEMORY_STORAGE = true;
+}
 
 // Настройка загрузки файлов
-const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        if (file.fieldname === 'apk') {
-            cb(null, path.join(UPLOADS_PATH, 'apks'));
-        } else if (file.fieldname === 'icon') {
-            cb(null, path.join(UPLOADS_PATH, 'icons'));
-        } else {
-            cb(new Error('Неверное поле файла'), false);
+let storage;
+
+if (global.USE_MEMORY_STORAGE) {
+    // Используем memory storage если нет доступа к файловой системе
+    console.log('🔄 Использую MemoryStorage для файлов');
+    storage = multer.memoryStorage();
+} else {
+    // Используем disk storage
+    storage = multer.diskStorage({
+        destination: function (req, file, cb) {
+            try {
+                if (file.fieldname === 'apk') {
+                    const dir = path.join(UPLOADS_PATH, 'apks');
+                    if (!fs.existsSync(dir)) {
+                        fs.mkdirSync(dir, { recursive: true });
+                    }
+                    cb(null, dir);
+                } else if (file.fieldname === 'icon') {
+                    const dir = path.join(UPLOADS_PATH, 'icons');
+                    if (!fs.existsSync(dir)) {
+                        fs.mkdirSync(dir, { recursive: true });
+                    }
+                    cb(null, dir);
+                } else {
+                    cb(new Error('Неверное поле файла'), false);
+                }
+            } catch (error) {
+                console.error('Ошибка создания папки для файла:', error);
+                cb(error, false);
+            }
+        },
+        filename: function (req, file, cb) {
+            const cleanName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+            const uniqueName = Date.now() + '-' + Math.random().toString(36).substring(2, 15) + path.extname(cleanName);
+            cb(null, uniqueName);
         }
-    },
-    filename: function (req, file, cb) {
-        const cleanName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
-        const uniqueName = Date.now() + '-' + Math.random().toString(36).substring(2, 15) + path.extname(cleanName);
-        cb(null, uniqueName);
-    }
-});
+    });
+}
 
 const fileFilter = (req, file, cb) => {
     if (file.fieldname === 'apk') {
@@ -91,78 +176,57 @@ const upload = multer({
     storage: storage,
     fileFilter: fileFilter,
     limits: { 
-        fileSize: 200 * 1024 * 1024,
+        fileSize: 50 * 1024 * 1024, // 50MB для начала
         files: 2
     }
 });
 
-// Хранилище данных (в памяти для простоты)
+// Хранилище данных (в памяти)
 let appsDatabase = [];
 let nextAppId = 1;
 
-// Создаем несколько тестовых приложений
+// Создаем демо-приложения
 const createDemoApps = () => {
     if (appsDatabase.length === 0) {
         const demoApps = [
             {
                 id: nextAppId++,
                 name: "WhatsApp Messenger",
-                description: "Бесплатный мессенджер для обмена сообщениями и звонками. Отправляйте сообщения, фото, видео, документы и совершайте бесплатные звонки.",
+                description: "Бесплатный мессенджер для обмена сообщениями и звонками.",
                 version: "2.23.10",
                 category: "Social",
-                icon_filename: "whatsapp_demo.png",
-                apk_filename: "whatsapp_demo.apk",
-                original_apk_name: "WhatsApp_v2.23.10.apk",
-                file_size: 45892000,
+                icon_filename: "whatsapp.png",
+                apk_filename: "whatsapp.apk",
                 downloads: 1250,
                 is_featured: true,
-                created_at: new Date().toISOString(),
-                updated_at: new Date().toISOString()
+                file_size: 45892000,
+                created_at: new Date().toISOString()
             },
             {
                 id: nextAppId++,
                 name: "Telegram",
-                description: "Быстрый и безопасный мессенджер с облачным хранением и секретными чатами. Синхронизация между устройствами.",
+                description: "Быстрый и безопасный мессенджер с облачным хранением.",
                 version: "9.5.0",
                 category: "Social",
-                icon_filename: "telegram_demo.png",
-                apk_filename: "telegram_demo.apk",
-                original_apk_name: "Telegram_v9.5.0.apk",
-                file_size: 67345000,
+                icon_filename: "telegram.png",
+                apk_filename: "telegram.apk",
                 downloads: 980,
                 is_featured: true,
-                created_at: new Date().toISOString(),
-                updated_at: new Date().toISOString()
+                file_size: 67345000,
+                created_at: new Date().toISOString()
             },
             {
                 id: nextAppId++,
                 name: "Spotify Music",
-                description: "Стриминговый сервис музыки и подкастов с миллионами треков. Создавайте плейлисты, открывайте новые треки.",
+                description: "Стриминговый сервис музыки и подкастов с миллионами треков.",
                 version: "8.8.60",
                 category: "Entertainment",
-                icon_filename: "spotify_demo.png",
-                apk_filename: "spotify_demo.apk",
-                original_apk_name: "Spotify_v8.8.60.apk",
-                file_size: 89231000,
+                icon_filename: "spotify.png",
+                apk_filename: "spotify.apk",
                 downloads: 750,
                 is_featured: false,
-                created_at: new Date().toISOString(),
-                updated_at: new Date().toISOString()
-            },
-            {
-                id: nextAppId++,
-                name: "YouTube",
-                description: "Крупнейший видеохостинг в мире. Смотрите видео, слушайте музыку, создавайте плейлисты и подписывайтесь на каналы.",
-                version: "18.45.43",
-                category: "Entertainment",
-                icon_filename: "youtube_demo.png",
-                apk_filename: "youtube_demo.apk",
-                original_apk_name: "YouTube_v18.45.43.apk",
-                file_size: 120543000,
-                downloads: 2100,
-                is_featured: true,
-                created_at: new Date().toISOString(),
-                updated_at: new Date().toISOString()
+                file_size: 89231000,
+                created_at: new Date().toISOString()
             }
         ];
         
@@ -172,20 +236,6 @@ const createDemoApps = () => {
 };
 
 createDemoApps();
-
-// Создаем администратора
-const createAdmin = async () => {
-    const adminUsername = '@BayRex';
-    const adminPassword = 'admin123';
-    
-    // Хешируем пароль
-    const hashedPassword = await bcrypt.hash(adminPassword, 10);
-    
-    return {
-        username: adminUsername,
-        password_hash: hashedPassword
-    };
-};
 
 // Middleware для проверки авторизации
 const requireAdmin = (req, res, next) => {
@@ -199,52 +249,59 @@ const requireAdmin = (req, res, next) => {
     }
 };
 
-// Middleware для обработки ошибок загрузки файлов
-const handleUploadErrors = (err, req, res, next) => {
-    if (err) {
-        if (err instanceof multer.MulterError) {
-            if (err.code === 'LIMIT_FILE_SIZE') {
-                return res.status(400).json({ 
-                    success: false, 
-                    error: 'Файл слишком большой. Максимальный размер: 200MB' 
-                });
-            }
-        }
-        return res.status(400).json({ 
-            success: false, 
-            error: err.message 
-        });
-    }
-    next();
-};
-
-// ==================== API РОУТЫ ====================
+// API Роуты
 
 // 1. Проверка сервера
 app.get('/api/health', (req, res) => {
     res.json({ 
         success: true, 
         message: 'BayRex APK Server is running',
-        version: '1.0.0'
+        version: '1.0.0',
+        uploads_path: UPLOADS_PATH,
+        using_memory_storage: !!global.USE_MEMORY_STORAGE
     });
 });
 
-// 2. Получить информацию о сервере
-app.get('/api/info', (req, res) => {
-    res.json({
-        success: true,
-        data: {
-            name: 'BayRex APK Store',
-            version: '1.0.0',
-            description: 'Магазин Android приложений',
-            admin: '@BayRex',
-            total_apps: appsDatabase.length,
-            total_downloads: appsDatabase.reduce((sum, app) => sum + app.downloads, 0)
+// 2. Получить приложения
+app.get('/api/apps', (req, res) => {
+    try {
+        const search = req.query.search || '';
+        let filteredApps = [...appsDatabase];
+        
+        if (search) {
+            const searchLower = search.toLowerCase();
+            filteredApps = filteredApps.filter(app => 
+                app.name.toLowerCase().includes(searchLower) || 
+                app.description.toLowerCase().includes(searchLower)
+            );
         }
-    });
+        
+        // Добавляем фиктивные URL для демо
+        const appsWithUrls = filteredApps.map(app => ({
+            ...app,
+            icon_url: `https://cdn-icons-png.flaticon.com/512/${app.id === 1 ? '124/124034' : app.id === 2 ? '2111/2111644' : '2111/2111624'}.png`,
+            apk_url: '#',
+            file_size_mb: (app.file_size / (1024 * 1024)).toFixed(2)
+        }));
+        
+        res.json({ 
+            success: true, 
+            data: {
+                apps: appsWithUrls,
+                total: appsWithUrls.length
+            }
+        });
+        
+    } catch (error) {
+        console.error('Ошибка получения приложений:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Ошибка получения приложений' 
+        });
+    }
 });
 
-// 3. Аутентификация
+// 3. Авторизация
 app.post('/api/login', async (req, res) => {
     try {
         const { username, password } = req.body;
@@ -256,37 +313,22 @@ app.post('/api/login', async (req, res) => {
             });
         }
         
-        // Создаем администратора если нужно
-        const admin = await createAdmin();
-        
-        if (username !== admin.username) {
-            return res.status(401).json({ 
+        // Проверяем администратора
+        if (username === '@BayRex' && password === 'admin123') {
+            req.session.adminId = 1;
+            req.session.username = username;
+            
+            res.json({ 
+                success: true, 
+                message: 'Вход выполнен успешно',
+                data: { username }
+            });
+        } else {
+            res.status(401).json({ 
                 success: false, 
                 error: 'Неверное имя пользователя или пароль' 
             });
         }
-        
-        const isPasswordValid = await bcrypt.compare(password, admin.password_hash);
-        
-        if (!isPasswordValid) {
-            return res.status(401).json({ 
-                success: false, 
-                error: 'Неверное имя пользователя или пароль' 
-            });
-        }
-        
-        // Создаем сессию
-        req.session.adminId = 1;
-        req.session.username = admin.username;
-        req.session.save();
-        
-        res.json({ 
-            success: true, 
-            message: 'Вход выполнен успешно',
-            data: {
-                username: admin.username
-            }
-        });
         
     } catch (error) {
         console.error('Ошибка входа:', error);
@@ -313,248 +355,14 @@ app.post('/api/logout', (req, res) => {
 });
 
 app.get('/api/check-auth', (req, res) => {
-    if (req.session.adminId) {
-        res.json({ 
-            success: true, 
-            authenticated: true,
-            data: {
-                username: req.session.username
-            }
-        });
-    } else {
-        res.json({ 
-            success: true, 
-            authenticated: false 
-        });
-    }
+    res.json({ 
+        success: true, 
+        authenticated: !!req.session.adminId,
+        data: req.session.adminId ? { username: req.session.username } : null
+    });
 });
 
-// 4. Приложения
-app.get('/api/apps', (req, res) => {
-    try {
-        const search = req.query.search || '';
-        const category = req.query.category || '';
-        const featured = req.query.featured === 'true';
-        
-        let filteredApps = [...appsDatabase];
-        
-        // Поиск
-        if (search) {
-            const searchLower = search.toLowerCase();
-            filteredApps = filteredApps.filter(app => 
-                app.name.toLowerCase().includes(searchLower) || 
-                app.description.toLowerCase().includes(searchLower)
-            );
-        }
-        
-        // Фильтр по категории
-        if (category) {
-            filteredApps = filteredApps.filter(app => app.category === category);
-        }
-        
-        // Фильтр по рекомендуемым
-        if (featured) {
-            filteredApps = filteredApps.filter(app => app.is_featured);
-        }
-        
-        // Добавляем URL к файлам
-        const baseUrl = `${req.protocol}://${req.get('host')}`;
-        const appsWithUrls = filteredApps.map(app => ({
-            ...app,
-            icon_url: `/uploads/icons/${app.icon_filename}`,
-            apk_url: `/uploads/apks/${app.apk_filename}`,
-            file_size_mb: (app.file_size / (1024 * 1024)).toFixed(2),
-            created_at_formatted: new Date(app.created_at).toLocaleDateString('ru-RU')
-        }));
-        
-        res.json({ 
-            success: true, 
-            data: {
-                apps: appsWithUrls,
-                total: appsWithUrls.length
-            }
-        });
-        
-    } catch (error) {
-        console.error('Ошибка получения приложений:', error);
-        res.status(500).json({ 
-            success: false, 
-            error: 'Ошибка получения приложений' 
-        });
-    }
-});
-
-app.get('/api/apps/:id', (req, res) => {
-    try {
-        const id = parseInt(req.params.id);
-        const app = appsDatabase.find(a => a.id === id);
-        
-        if (!app) {
-            return res.status(404).json({ 
-                success: false, 
-                error: 'Приложение не найдено' 
-            });
-        }
-        
-        const baseUrl = `${req.protocol}://${req.get('host')}`;
-        const appWithUrls = {
-            ...app,
-            icon_url: `/uploads/icons/${app.icon_filename}`,
-            apk_url: `/uploads/apks/${app.apk_filename}`,
-            file_size_mb: (app.file_size / (1024 * 1024)).toFixed(2),
-            created_at_formatted: new Date(app.created_at).toLocaleDateString('ru-RU')
-        };
-        
-        res.json({ 
-            success: true, 
-            data: appWithUrls 
-        });
-        
-    } catch (error) {
-        console.error('Ошибка получения приложения:', error);
-        res.status(500).json({ 
-            success: false, 
-            error: 'Ошибка получения приложения' 
-        });
-    }
-});
-
-app.post('/api/apps', requireAdmin, upload.fields([
-    { name: 'icon', maxCount: 1 },
-    { name: 'apk', maxCount: 1 }
-]), handleUploadErrors, (req, res) => {
-    try {
-        const { name, description, version, category } = req.body;
-        const iconFile = req.files['icon'] ? req.files['icon'][0] : null;
-        const apkFile = req.files['apk'] ? req.files['apk'][0] : null;
-        
-        if (!name || !description || !apkFile) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Название, описание и APK файл обязательны' 
-            });
-        }
-        
-        const newApp = {
-            id: nextAppId++,
-            name: name.trim(),
-            description: description.trim(),
-            version: version || '1.0',
-            category: category || 'Other',
-            icon_filename: iconFile ? iconFile.filename : 'default.png',
-            apk_filename: apkFile.filename,
-            original_apk_name: apkFile.originalname,
-            file_size: apkFile.size,
-            downloads: 0,
-            is_featured: req.body.featured === 'true',
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-        };
-        
-        appsDatabase.push(newApp);
-        
-        res.status(201).json({ 
-            success: true, 
-            message: 'Приложение успешно добавлено',
-            data: newApp
-        });
-        
-    } catch (error) {
-        console.error('Ошибка добавления приложения:', error);
-        res.status(500).json({ 
-            success: false, 
-            error: 'Ошибка добавления приложения' 
-        });
-    }
-});
-
-app.put('/api/apps/:id', requireAdmin, upload.fields([
-    { name: 'icon', maxCount: 1 },
-    { name: 'apk', maxCount: 1 }
-]), handleUploadErrors, (req, res) => {
-    try {
-        const id = parseInt(req.params.id);
-        const appIndex = appsDatabase.findIndex(a => a.id === id);
-        
-        if (appIndex === -1) {
-            return res.status(404).json({ 
-                success: false, 
-                error: 'Приложение не найдено' 
-            });
-        }
-        
-        const { name, description, version, category } = req.body;
-        const iconFile = req.files['icon'] ? req.files['icon'][0] : null;
-        const apkFile = req.files['apk'] ? req.files['apk'][0] : null;
-        
-        if (!name || !description) {
-            return res.status(400).json({ 
-                success: false, 
-                error: 'Название и описание обязательны' 
-            });
-        }
-        
-        const updatedApp = {
-            ...appsDatabase[appIndex],
-            name: name.trim(),
-            description: description.trim(),
-            version: version || appsDatabase[appIndex].version,
-            category: category || appsDatabase[appIndex].category,
-            icon_filename: iconFile ? iconFile.filename : appsDatabase[appIndex].icon_filename,
-            apk_filename: apkFile ? apkFile.filename : appsDatabase[appIndex].apk_filename,
-            original_apk_name: apkFile ? apkFile.originalname : appsDatabase[appIndex].original_apk_name,
-            file_size: apkFile ? apkFile.size : appsDatabase[appIndex].file_size,
-            is_featured: req.body.featured === 'true',
-            updated_at: new Date().toISOString()
-        };
-        
-        appsDatabase[appIndex] = updatedApp;
-        
-        res.json({ 
-            success: true, 
-            message: 'Приложение успешно обновлено',
-            data: updatedApp
-        });
-        
-    } catch (error) {
-        console.error('Ошибка обновления приложения:', error);
-        res.status(500).json({ 
-            success: false, 
-            error: 'Ошибка обновления приложения' 
-        });
-    }
-});
-
-app.delete('/api/apps/:id', requireAdmin, (req, res) => {
-    try {
-        const id = parseInt(req.params.id);
-        const appIndex = appsDatabase.findIndex(a => a.id === id);
-        
-        if (appIndex === -1) {
-            return res.status(404).json({ 
-                success: false, 
-                error: 'Приложение не найдено' 
-            });
-        }
-        
-        const deletedApp = appsDatabase.splice(appIndex, 1)[0];
-        
-        res.json({ 
-            success: true, 
-            message: 'Приложение успешно удалено',
-            data: deletedApp
-        });
-        
-    } catch (error) {
-        console.error('Ошибка удаления приложения:', error);
-        res.status(500).json({ 
-            success: false, 
-            error: 'Ошибка удаления приложения' 
-        });
-    }
-});
-
-// 5. Скачивание приложения
+// 4. Скачивание приложения
 app.post('/api/apps/:id/download', (req, res) => {
     try {
         const id = parseInt(req.params.id);
@@ -570,15 +378,13 @@ app.post('/api/apps/:id/download', (req, res) => {
         // Увеличиваем счетчик скачиваний
         appsDatabase[appIndex].downloads += 1;
         
-        const baseUrl = `${req.protocol}://${req.get('host')}`;
-        const downloadUrl = `${baseUrl}/uploads/apks/${appsDatabase[appIndex].apk_filename}`;
-        
+        // Для демо просто возвращаем успех
         res.json({ 
             success: true, 
             message: 'Скачивание зарегистрировано',
             data: {
-                download_url: downloadUrl,
-                original_filename: appsDatabase[appIndex].original_apk_name,
+                download_url: '#',
+                original_filename: appsDatabase[appIndex].apk_filename,
                 downloads: appsDatabase[appIndex].downloads,
                 app_name: appsDatabase[appIndex].name
             }
@@ -593,7 +399,7 @@ app.post('/api/apps/:id/download', (req, res) => {
     }
 });
 
-// 6. Статистика
+// 5. Статистика
 app.get('/api/stats', (req, res) => {
     try {
         const totalApps = appsDatabase.length;
@@ -601,22 +407,13 @@ app.get('/api/stats', (req, res) => {
         const totalSizeMB = appsDatabase.reduce((sum, app) => sum + app.file_size, 0) / (1024 * 1024);
         const featuredApps = appsDatabase.filter(app => app.is_featured).length;
         
-        // Самое популярное приложение
-        const topApp = appsDatabase.length > 0 
-            ? appsDatabase.reduce((prev, current) => (prev.downloads > current.downloads) ? prev : current)
-            : null;
-        
         res.json({ 
             success: true, 
             data: {
                 total_apps: totalApps,
                 total_downloads: totalDownloads,
                 total_size_mb: totalSizeMB.toFixed(2),
-                featured_apps: featuredApps,
-                top_app: topApp ? {
-                    name: topApp.name,
-                    downloads: topApp.downloads
-                } : null
+                featured_apps: featuredApps
             }
         });
         
@@ -629,16 +426,13 @@ app.get('/api/stats', (req, res) => {
     }
 });
 
-// 7. Категории
+// 6. Категории
 app.get('/api/categories', (req, res) => {
     const categories = [
-        { id: 1, name: 'Social', description: 'Социальные сети и мессенджеры', icon: 'fas fa-comments' },
-        { id: 2, name: 'Tools', description: 'Инструменты и утилиты', icon: 'fas fa-tools' },
-        { id: 3, name: 'Games', description: 'Игры', icon: 'fas fa-gamepad' },
-        { id: 4, name: 'Productivity', description: 'Продуктивность', icon: 'fas fa-briefcase' },
-        { id: 5, name: 'Entertainment', description: 'Развлечения', icon: 'fas fa-film' },
-        { id: 6, name: 'Education', description: 'Образование', icon: 'fas fa-graduation-cap' },
-        { id: 7, name: 'Other', description: 'Другое', icon: 'fas fa-ellipsis-h' }
+        { id: 1, name: 'Social', description: 'Социальные сети', icon: 'fas fa-comments' },
+        { id: 2, name: 'Tools', description: 'Инструменты', icon: 'fas fa-tools' },
+        { id: 3, name: 'Entertainment', description: 'Развлечения', icon: 'fas fa-film' },
+        { id: 4, name: 'Other', description: 'Другое', icon: 'fas fa-ellipsis-h' }
     ];
     
     res.json({ 
@@ -647,11 +441,10 @@ app.get('/api/categories', (req, res) => {
     });
 });
 
-// 8. Поиск
+// 7. Поиск
 app.get('/api/search', (req, res) => {
     try {
         const query = req.query.q || '';
-        const limit = parseInt(req.query.limit) || 10;
         
         if (!query.trim()) {
             return res.json({ 
@@ -670,7 +463,6 @@ app.get('/api/search', (req, res) => {
                 app.name.toLowerCase().includes(searchLower) || 
                 app.description.toLowerCase().includes(searchLower)
             )
-            .slice(0, limit)
             .map(app => ({
                 id: app.id,
                 name: app.name,
@@ -698,23 +490,12 @@ app.get('/api/search', (req, res) => {
     }
 });
 
-// Статические файлы
-app.use('/uploads', express.static(UPLOADS_PATH));
+// Статические файлы (фронтенд)
 app.use(express.static(path.join(__dirname, '../public')));
 
 // Всё остальное → фронтенд
 app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, '../public', 'index.html'));
-});
-
-// Обработка ошибок
-app.use((err, req, res, next) => {
-    console.error('Необработанная ошибка:', err);
-    res.status(500).json({ 
-        success: false, 
-        error: 'Внутренняя ошибка сервера',
-        message: process.env.NODE_ENV === 'development' ? err.message : undefined
-    });
 });
 
 // Запуск сервера
@@ -725,11 +506,13 @@ app.listen(PORT, () => {
     console.log(`📍 Порт: ${PORT}`);
     console.log(`📍 URL: http://localhost:${PORT}`);
     console.log('='.repeat(60));
-    console.log('👑 Администратор:');
-    console.log('   Имя пользователя: @BayRex');
-    console.log('   Пароль: admin123');
+    console.log('👑 Администратор: @BayRex / admin123');
     console.log('='.repeat(60));
-    console.log('📁 Папка загрузок:', UPLOADS_PATH);
-    console.log('📊 Приложений в базе:', appsDatabase.length);
+    console.log(`📁 Папка загрузок: $here UPLOADS_PATH}`);
+    console.log(`💾 Memory Storage: ${global.USE_MEMORY_STORAGE ? 'Да' : 'Нет'}`);
+    console.log('='.repeat(60));
+    console.log(`📊 Приложений: ${appsDatabase.length}`);
+    console.log('='.repeat(60));
+    console.log('✅ Сервер готов к работе!');
     console.log('='.repeat(60));
 });
