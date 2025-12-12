@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: bayrex-apk
+    env: node
+    buildCommand: cd server && npm install
+    startCommand: cd server && node index.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SESSION_SECRET
+        generateValue: true
+    disk:
+      name: uploads
+      mountPath: /var/data/uploads
+      sizeGB: 10
