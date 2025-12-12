@@ -1,376 +1,735 @@
 const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
 const multer = require('multer');
 const path = require('path');
+const fs = require('fs');
 const cors = require('cors');
-const bcrypt = require('bcryptjs');
 const session = require('express-session');
-require('dotenv').config();
+const bcrypt = require('bcryptjs');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
 // Middleware
 app.use(cors({
-    origin: ['http://localhost:8080', 'http://ваш-домен.ру'],
+    origin: true,
     credentials: true
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Настройка сессий
+// Сессии
 app.use(session({
     secret: process.env.SESSION_SECRET || 'bayrex-secret-key-2023',
     resave: false,
-    saveUninitialized: false,
+    saveUninitialized: true,
     cookie: {
-        secure: false, // Поставьте true если используете HTTPS
-        maxAge: 24 * 60 * 60 * 1000 // 24 часа
+        secure: false,
+        maxAge: 24 * 60 * 60 * 1000
     }
 }));
+
+// Путь для загрузок (на Render используем Persistent Disk)
+const UPLOADS_PATH = process.env.RENDER ? '/var/data/uploads' : 'uploads';
+
+// Создаем папки для загрузок если их нет
+const createUploadDirs = () => {
+    const dirs = [
+        UPLOADS_PATH,
+        path.join(UPLOADS_PATH, 'apks'),
+        path.join(UPLOADS_PATH, 'icons')
+    ];
+    
+    dirs.forEach(dir => {
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+            console.log(`✅ Создана папка: ${dir}`);
+        }
+    });
+};
+
+createUploadDirs();
 
 // Настройка загрузки файлов
 const storage = multer.diskStorage({
     destination: function (req, file, cb) {
         if (file.fieldname === 'apk') {
-            cb(null, 'uploads/apks/');
+            cb(null, path.join(UPLOADS_PATH, 'apks'));
         } else if (file.fieldname === 'icon') {
-            cb(null, 'uploads/icons/');
+            cb(null, path.join(UPLOADS_PATH, 'icons'));
+        } else {
+            cb(new Error('Неверное поле файла'), false);
         }
     },
     filename: function (req, file, cb) {
-        const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9) + path.extname(file.originalname);
+        const cleanName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const uniqueName = Date.now() + '-' + Math.random().toString(36).substring(2, 15) + path.extname(cleanName);
         cb(null, uniqueName);
     }
 });
 
-const upload = multer({ 
-    storage: storage,
-    limits: { fileSize: 100 * 1024 * 1024 } // 100MB лимит
-});
-
-// Подключение к базе данных SQLite
-const db = new sqlite3.Database('database.db');
-
-// Создание таблиц
-db.serialize(() => {
-    // Таблица приложений
-    db.run(`CREATE TABLE IF NOT EXISTS apps (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        description TEXT,
-        icon_filename TEXT,
-        apk_filename TEXT,
-        original_apk_name TEXT,
-        downloads INTEGER DEFAULT 0,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`);
-
-    // Таблица администраторов
-    db.run(`CREATE TABLE IF NOT EXISTS admins (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`);
-
-    // Создаем администратора по умолчанию
-    const defaultAdmin = {
-        username: '@BayRex',
-        password: 'admin123'
-    };
-    
-    // Хешируем пароль и добавляем администратора
-    bcrypt.hash(defaultAdmin.password, 10, (err, hash) => {
-        if (err) {
-            console.error('Ошибка хеширования пароля:', err);
-            return;
+const fileFilter = (req, file, cb) => {
+    if (file.fieldname === 'apk') {
+        const ext = path.extname(file.originalname).toLowerCase();
+        if (ext === '.apk') {
+            cb(null, true);
+        } else {
+            cb(new Error('Только APK файлы разрешены'), false);
         }
-        
-        // Проверяем, существует ли уже администратор
-        db.get('SELECT * FROM admins WHERE username = ?', [defaultAdmin.username], (err, row) => {
-            if (err) {
-                console.error('Ошибка проверки администратора:', err);
-                return;
-            }
-            
-            if (!row) {
-                db.run('INSERT INTO admins (username, password_hash) VALUES (?, ?)', 
-                    [defaultAdmin.username, hash], 
-                    (err) => {
-                        if (err) {
-                            console.error('Ошибка создания администратора:', err);
-                        } else {
-                            console.log('Администратор @BayRex создан');
-                        }
-                    });
-            }
-        });
-    });
-});
-
-// Middleware для проверки авторизации
-const isAdmin = (req, res, next) => {
-    if (req.session && req.session.adminId) {
-        next();
+    } else if (file.fieldname === 'icon') {
+        const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+        if (allowedTypes.includes(file.mimetype)) {
+            cb(null, true);
+        } else {
+            cb(new Error('Только изображения разрешены'), false);
+        }
     } else {
-        res.status(401).json({ error: 'Требуется авторизация администратора' });
+        cb(new Error('Неверное поле файла'), false);
     }
 };
 
-// API маршруты
+const upload = multer({ 
+    storage: storage,
+    fileFilter: fileFilter,
+    limits: { 
+        fileSize: 200 * 1024 * 1024,
+        files: 2
+    }
+});
 
-// 1. Аутентификация
-app.post('/api/login', (req, res) => {
-    const { username, password } = req.body;
+// Хранилище данных (в памяти для простоты)
+let appsDatabase = [];
+let nextAppId = 1;
+
+// Создаем несколько тестовых приложений
+const createDemoApps = () => {
+    if (appsDatabase.length === 0) {
+        const demoApps = [
+            {
+                id: nextAppId++,
+                name: "WhatsApp Messenger",
+                description: "Бесплатный мессенджер для обмена сообщениями и звонками. Отправляйте сообщения, фото, видео, документы и совершайте бесплатные звонки.",
+                version: "2.23.10",
+                category: "Social",
+                icon_filename: "whatsapp_demo.png",
+                apk_filename: "whatsapp_demo.apk",
+                original_apk_name: "WhatsApp_v2.23.10.apk",
+                file_size: 45892000,
+                downloads: 1250,
+                is_featured: true,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            },
+            {
+                id: nextAppId++,
+                name: "Telegram",
+                description: "Быстрый и безопасный мессенджер с облачным хранением и секретными чатами. Синхронизация между устройствами.",
+                version: "9.5.0",
+                category: "Social",
+                icon_filename: "telegram_demo.png",
+                apk_filename: "telegram_demo.apk",
+                original_apk_name: "Telegram_v9.5.0.apk",
+                file_size: 67345000,
+                downloads: 980,
+                is_featured: true,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            },
+            {
+                id: nextAppId++,
+                name: "Spotify Music",
+                description: "Стриминговый сервис музыки и подкастов с миллионами треков. Создавайте плейлисты, открывайте новые треки.",
+                version: "8.8.60",
+                category: "Entertainment",
+                icon_filename: "spotify_demo.png",
+                apk_filename: "spotify_demo.apk",
+                original_apk_name: "Spotify_v8.8.60.apk",
+                file_size: 89231000,
+                downloads: 750,
+                is_featured: false,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            },
+            {
+                id: nextAppId++,
+                name: "YouTube",
+                description: "Крупнейший видеохостинг в мире. Смотрите видео, слушайте музыку, создавайте плейлисты и подписывайтесь на каналы.",
+                version: "18.45.43",
+                category: "Entertainment",
+                icon_filename: "youtube_demo.png",
+                apk_filename: "youtube_demo.apk",
+                original_apk_name: "YouTube_v18.45.43.apk",
+                file_size: 120543000,
+                downloads: 2100,
+                is_featured: true,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+            }
+        ];
+        
+        appsDatabase = demoApps;
+        console.log(`✅ Создано ${demoApps.length} демо-приложений`);
+    }
+};
+
+createDemoApps();
+
+// Создаем администратора
+const createAdmin = async () => {
+    const adminUsername = '@BayRex';
+    const adminPassword = 'admin123';
     
-    db.get('SELECT * FROM admins WHERE username = ?', [username], (err, admin) => {
-        if (err) {
-            return res.status(500).json({ error: 'Ошибка базы данных' });
-        }
-        
-        if (!admin) {
-            return res.status(401).json({ error: 'Неверное имя пользователя или пароль' });
-        }
-        
-        bcrypt.compare(password, admin.password_hash, (err, match) => {
-            if (err) {
-                return res.status(500).json({ error: 'Ошибка проверки пароля' });
-            }
-            
-            if (match) {
-                req.session.adminId = admin.id;
-                req.session.username = admin.username;
-                res.json({ 
-                    success: true, 
-                    message: 'Вход выполнен успешно',
-                    username: admin.username 
-                });
-            } else {
-                res.status(401).json({ error: 'Неверное имя пользователя или пароль' });
-            }
+    // Хешируем пароль
+    const hashedPassword = await bcrypt.hash(adminPassword, 10);
+    
+    return {
+        username: adminUsername,
+        password_hash: hashedPassword
+    };
+};
+
+// Middleware для проверки авторизации
+const requireAdmin = (req, res, next) => {
+    if (req.session && req.session.adminId) {
+        next();
+    } else {
+        res.status(401).json({ 
+            success: false, 
+            error: 'Требуется авторизация администратора' 
         });
+    }
+};
+
+// Middleware для обработки ошибок загрузки файлов
+const handleUploadErrors = (err, req, res, next) => {
+    if (err) {
+        if (err instanceof multer.MulterError) {
+            if (err.code === 'LIMIT_FILE_SIZE') {
+                return res.status(400).json({ 
+                    success: false, 
+                    error: 'Файл слишком большой. Максимальный размер: 200MB' 
+                });
+            }
+        }
+        return res.status(400).json({ 
+            success: false, 
+            error: err.message 
+        });
+    }
+    next();
+};
+
+// ==================== API РОУТЫ ====================
+
+// 1. Проверка сервера
+app.get('/api/health', (req, res) => {
+    res.json({ 
+        success: true, 
+        message: 'BayRex APK Server is running',
+        version: '1.0.0'
     });
 });
 
+// 2. Получить информацию о сервере
+app.get('/api/info', (req, res) => {
+    res.json({
+        success: true,
+        data: {
+            name: 'BayRex APK Store',
+            version: '1.0.0',
+            description: 'Магазин Android приложений',
+            admin: '@BayRex',
+            total_apps: appsDatabase.length,
+            total_downloads: appsDatabase.reduce((sum, app) => sum + app.downloads, 0)
+        }
+    });
+});
+
+// 3. Аутентификация
+app.post('/api/login', async (req, res) => {
+    try {
+        const { username, password } = req.body;
+        
+        if (!username || !password) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Имя пользователя и пароль обязательны' 
+            });
+        }
+        
+        // Создаем администратора если нужно
+        const admin = await createAdmin();
+        
+        if (username !== admin.username) {
+            return res.status(401).json({ 
+                success: false, 
+                error: 'Неверное имя пользователя или пароль' 
+            });
+        }
+        
+        const isPasswordValid = await bcrypt.compare(password, admin.password_hash);
+        
+        if (!isPasswordValid) {
+            return res.status(401).json({ 
+                success: false, 
+                error: 'Неверное имя пользователя или пароль' 
+            });
+        }
+        
+        // Создаем сессию
+        req.session.adminId = 1;
+        req.session.username = admin.username;
+        req.session.save();
+        
+        res.json({ 
+            success: true, 
+            message: 'Вход выполнен успешно',
+            data: {
+                username: admin.username
+            }
+        });
+        
+    } catch (error) {
+        console.error('Ошибка входа:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Внутренняя ошибка сервера' 
+        });
+    }
+});
+
 app.post('/api/logout', (req, res) => {
-    req.session.destroy();
-    res.json({ success: true, message: 'Выход выполнен' });
+    req.session.destroy((err) => {
+        if (err) {
+            return res.status(500).json({ 
+                success: false, 
+                error: 'Ошибка при выходе' 
+            });
+        }
+        res.json({ 
+            success: true, 
+            message: 'Выход выполнен успешно' 
+        });
+    });
 });
 
 app.get('/api/check-auth', (req, res) => {
     if (req.session.adminId) {
-        res.json({ authenticated: true, username: req.session.username });
+        res.json({ 
+            success: true, 
+            authenticated: true,
+            data: {
+                username: req.session.username
+            }
+        });
     } else {
-        res.json({ authenticated: false });
+        res.json({ 
+            success: true, 
+            authenticated: false 
+        });
     }
 });
 
-// 2. Приложения
+// 4. Приложения
 app.get('/api/apps', (req, res) => {
-    const search = req.query.search || '';
-    const query = search 
-        ? 'SELECT * FROM apps WHERE name LIKE ? OR description LIKE ? ORDER BY created_at DESC'
-        : 'SELECT * FROM apps ORDER BY created_at DESC';
-    
-    const params = search ? [`%${search}%`, `%${search}%`] : [];
-    
-    db.all(query, params, (err, apps) => {
-        if (err) {
-            return res.status(500).json({ error: 'Ошибка получения приложений' });
+    try {
+        const search = req.query.search || '';
+        const category = req.query.category || '';
+        const featured = req.query.featured === 'true';
+        
+        let filteredApps = [...appsDatabase];
+        
+        // Поиск
+        if (search) {
+            const searchLower = search.toLowerCase();
+            filteredApps = filteredApps.filter(app => 
+                app.name.toLowerCase().includes(searchLower) || 
+                app.description.toLowerCase().includes(searchLower)
+            );
         }
         
-        // Добавляем полные URL к файлам
+        // Фильтр по категории
+        if (category) {
+            filteredApps = filteredApps.filter(app => app.category === category);
+        }
+        
+        // Фильтр по рекомендуемым
+        if (featured) {
+            filteredApps = filteredApps.filter(app => app.is_featured);
+        }
+        
+        // Добавляем URL к файлам
         const baseUrl = `${req.protocol}://${req.get('host')}`;
-        const appsWithUrls = apps.map(app => ({
+        const appsWithUrls = filteredApps.map(app => ({
             ...app,
-            icon_url: `${baseUrl}/uploads/icons/${app.icon_filename}`,
-            apk_url: `${baseUrl}/uploads/apks/${app.apk_filename}`
+            icon_url: `/uploads/icons/${app.icon_filename}`,
+            apk_url: `/uploads/apks/${app.apk_filename}`,
+            file_size_mb: (app.file_size / (1024 * 1024)).toFixed(2),
+            created_at_formatted: new Date(app.created_at).toLocaleDateString('ru-RU')
         }));
         
-        res.json(appsWithUrls);
-    });
+        res.json({ 
+            success: true, 
+            data: {
+                apps: appsWithUrls,
+                total: appsWithUrls.length
+            }
+        });
+        
+    } catch (error) {
+        console.error('Ошибка получения приложений:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Ошибка получения приложений' 
+        });
+    }
 });
 
 app.get('/api/apps/:id', (req, res) => {
-    const id = req.params.id;
-    
-    db.get('SELECT * FROM apps WHERE id = ?', [id], (err, app) => {
-        if (err) {
-            return res.status(500).json({ error: 'Ошибка получения приложения' });
-        }
+    try {
+        const id = parseInt(req.params.id);
+        const app = appsDatabase.find(a => a.id === id);
         
         if (!app) {
-            return res.status(404).json({ error: 'Приложение не найдено' });
+            return res.status(404).json({ 
+                success: false, 
+                error: 'Приложение не найдено' 
+            });
         }
         
         const baseUrl = `${req.protocol}://${req.get('host')}`;
-        app.icon_url = `${baseUrl}/uploads/icons/${app.icon_filename}`;
-        app.apk_url = `${baseUrl}/uploads/apks/${app.apk_filename}`;
+        const appWithUrls = {
+            ...app,
+            icon_url: `/uploads/icons/${app.icon_filename}`,
+            apk_url: `/uploads/apks/${app.apk_filename}`,
+            file_size_mb: (app.file_size / (1024 * 1024)).toFixed(2),
+            created_at_formatted: new Date(app.created_at).toLocaleDateString('ru-RU')
+        };
         
-        res.json(app);
-    });
-});
-
-app.post('/api/apps', isAdmin, upload.fields([
-    { name: 'icon', maxCount: 1 },
-    { name: 'apk', maxCount: 1 }
-]), (req, res) => {
-    const { name, description } = req.body;
-    const iconFile = req.files['icon'] ? req.files['icon'][0] : null;
-    const apkFile = req.files['apk'] ? req.files['apk'][0] : null;
-    
-    if (!name || !description || !iconFile || !apkFile) {
-        return res.status(400).json({ error: 'Все поля обязательны' });
-    }
-    
-    const appData = {
-        name,
-        description,
-        icon_filename: iconFile.filename,
-        apk_filename: apkFile.filename,
-        original_apk_name: apkFile.originalname
-    };
-    
-    db.run('INSERT INTO apps (name, description, icon_filename, apk_filename, original_apk_name) VALUES (?, ?, ?, ?, ?)',
-        [appData.name, appData.description, appData.icon_filename, appData.apk_filename, appData.original_apk_name],
-        function(err) {
-            if (err) {
-                return res.status(500).json({ error: 'Ошибка сохранения приложения' });
-            }
-            
-            appData.id = this.lastID;
-            appData.downloads = 0;
-            
-            const baseUrl = `${req.protocol}://${req.get('host')}`;
-            appData.icon_url = `${baseUrl}/uploads/icons/${appData.icon_filename}`;
-            appData.apk_url = `${baseUrl}/uploads/apks/${appData.apk_filename}`;
-            
-            res.status(201).json(appData);
+        res.json({ 
+            success: true, 
+            data: appWithUrls 
         });
+        
+    } catch (error) {
+        console.error('Ошибка получения приложения:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Ошибка получения приложения' 
+        });
+    }
 });
 
-app.put('/api/apps/:id', isAdmin, upload.fields([
+app.post('/api/apps', requireAdmin, upload.fields([
     { name: 'icon', maxCount: 1 },
     { name: 'apk', maxCount: 1 }
-]), (req, res) => {
-    const id = req.params.id;
-    const { name, description } = req.body;
-    const iconFile = req.files['icon'] ? req.files['icon'][0] : null;
-    const apkFile = req.files['apk'] ? req.files['apk'][0] : null;
-    
-    if (!name || !description) {
-        return res.status(400).json({ error: 'Название и описание обязательны' });
-    }
-    
-    // Сначала получаем текущее приложение
-    db.get('SELECT * FROM apps WHERE id = ?', [id], (err, app) => {
-        if (err) {
-            return res.status(500).json({ error: 'Ошибка получения приложения' });
+]), handleUploadErrors, (req, res) => {
+    try {
+        const { name, description, version, category } = req.body;
+        const iconFile = req.files['icon'] ? req.files['icon'][0] : null;
+        const apkFile = req.files['apk'] ? req.files['apk'][0] : null;
+        
+        if (!name || !description || !apkFile) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Название, описание и APK файл обязательны' 
+            });
         }
         
-        if (!app) {
-            return res.status(404).json({ error: 'Приложение не найдено' });
-        }
-        
-        // Подготавливаем данные для обновления
-        const updateData = {
-            name,
-            description,
-            icon_filename: iconFile ? iconFile.filename : app.icon_filename,
-            apk_filename: apkFile ? apkFile.filename : app.apk_filename,
-            original_apk_name: apkFile ? apkFile.originalname : app.original_apk_name,
+        const newApp = {
+            id: nextAppId++,
+            name: name.trim(),
+            description: description.trim(),
+            version: version || '1.0',
+            category: category || 'Other',
+            icon_filename: iconFile ? iconFile.filename : 'default.png',
+            apk_filename: apkFile.filename,
+            original_apk_name: apkFile.originalname,
+            file_size: apkFile.size,
+            downloads: 0,
+            is_featured: req.body.featured === 'true',
+            created_at: new Date().toISOString(),
             updated_at: new Date().toISOString()
         };
         
-        db.run(`UPDATE apps SET 
-                name = ?, description = ?, icon_filename = ?, apk_filename = ?, 
-                original_apk_name = ?, updated_at = ? 
-                WHERE id = ?`,
-            [updateData.name, updateData.description, updateData.icon_filename, 
-             updateData.apk_filename, updateData.original_apk_name, 
-             updateData.updated_at, id],
-            function(err) {
-                if (err) {
-                    return res.status(500).json({ error: 'Ошибка обновления приложения' });
-                }
-                
-                updateData.id = parseInt(id);
-                updateData.downloads = app.downloads;
-                
-                const baseUrl = `${req.protocol}://${req.get('host')}`;
-                updateData.icon_url = `${baseUrl}/uploads/icons/${updateData.icon_filename}`;
-                updateData.apk_url = `${baseUrl}/uploads/apks/${updateData.apk_filename}`;
-                
-                res.json(updateData);
-            });
-    });
-});
-
-app.delete('/api/apps/:id', isAdmin, (req, res) => {
-    const id = req.params.id;
-    
-    // Сначала получаем информацию о файлах
-    db.get('SELECT icon_filename, apk_filename FROM apps WHERE id = ?', [id], (err, app) => {
-        if (err) {
-            return res.status(500).json({ error: 'Ошибка получения приложения' });
-        }
+        appsDatabase.push(newApp);
         
-        if (!app) {
-            return res.status(404).json({ error: 'Приложение не найдено' });
-        }
-        
-        // Удаляем из базы данных
-        db.run('DELETE FROM apps WHERE id = ?', [id], function(err) {
-            if (err) {
-                return res.status(500).json({ error: 'Ошибка удаления приложения' });
-            }
-            
-            // Здесь можно добавить удаление физических файлов
-            // fs.unlink(`uploads/icons/${app.icon_filename}`, () => {});
-            // fs.unlink(`uploads/apks/${app.apk_filename}`, () => {});
-            
-            res.json({ success: true, message: 'Приложение удалено' });
+        res.status(201).json({ 
+            success: true, 
+            message: 'Приложение успешно добавлено',
+            data: newApp
         });
-    });
+        
+    } catch (error) {
+        console.error('Ошибка добавления приложения:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Ошибка добавления приложения' 
+        });
+    }
 });
 
-// 3. Статистика скачиваний
+app.put('/api/apps/:id', requireAdmin, upload.fields([
+    { name: 'icon', maxCount: 1 },
+    { name: 'apk', maxCount: 1 }
+]), handleUploadErrors, (req, res) => {
+    try {
+        const id = parseInt(req.params.id);
+        const appIndex = appsDatabase.findIndex(a => a.id === id);
+        
+        if (appIndex === -1) {
+            return res.status(404).json({ 
+                success: false, 
+                error: 'Приложение не найдено' 
+            });
+        }
+        
+        const { name, description, version, category } = req.body;
+        const iconFile = req.files['icon'] ? req.files['icon'][0] : null;
+        const apkFile = req.files['apk'] ? req.files['apk'][0] : null;
+        
+        if (!name || !description) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Название и описание обязательны' 
+            });
+        }
+        
+        const updatedApp = {
+            ...appsDatabase[appIndex],
+            name: name.trim(),
+            description: description.trim(),
+            version: version || appsDatabase[appIndex].version,
+            category: category || appsDatabase[appIndex].category,
+            icon_filename: iconFile ? iconFile.filename : appsDatabase[appIndex].icon_filename,
+            apk_filename: apkFile ? apkFile.filename : appsDatabase[appIndex].apk_filename,
+            original_apk_name: apkFile ? apkFile.originalname : appsDatabase[appIndex].original_apk_name,
+            file_size: apkFile ? apkFile.size : appsDatabase[appIndex].file_size,
+            is_featured: req.body.featured === 'true',
+            updated_at: new Date().toISOString()
+        };
+        
+        appsDatabase[appIndex] = updatedApp;
+        
+        res.json({ 
+            success: true, 
+            message: 'Приложение успешно обновлено',
+            data: updatedApp
+        });
+        
+    } catch (error) {
+        console.error('Ошибка обновления приложения:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Ошибка обновления приложения' 
+        });
+    }
+});
+
+app.delete('/api/apps/:id', requireAdmin, (req, res) => {
+    try {
+        const id = parseInt(req.params.id);
+        const appIndex = appsDatabase.findIndex(a => a.id === id);
+        
+        if (appIndex === -1) {
+            return res.status(404).json({ 
+                success: false, 
+                error: 'Приложение не найдено' 
+            });
+        }
+        
+        const deletedApp = appsDatabase.splice(appIndex, 1)[0];
+        
+        res.json({ 
+            success: true, 
+            message: 'Приложение успешно удалено',
+            data: deletedApp
+        });
+        
+    } catch (error) {
+        console.error('Ошибка удаления приложения:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Ошибка удаления приложения' 
+        });
+    }
+});
+
+// 5. Скачивание приложения
 app.post('/api/apps/:id/download', (req, res) => {
-    const id = req.params.id;
-    
-    db.run('UPDATE apps SET downloads = downloads + 1 WHERE id = ?', [id], (err) => {
-        if (err) {
-            console.error('Ошибка обновления счетчика скачиваний:', err);
+    try {
+        const id = parseInt(req.params.id);
+        const appIndex = appsDatabase.findIndex(a => a.id === id);
+        
+        if (appIndex === -1) {
+            return res.status(404).json({ 
+                success: false, 
+                error: 'Приложение не найдено' 
+            });
         }
         
-        // Получаем обновленное приложение
-        db.get('SELECT * FROM apps WHERE id = ?', [id], (err, app) => {
-            if (err || !app) {
-                return res.status(404).json({ error: 'Приложение не найдено' });
+        // Увеличиваем счетчик скачиваний
+        appsDatabase[appIndex].downloads += 1;
+        
+        const baseUrl = `${req.protocol}://${req.get('host')}`;
+        const downloadUrl = `${baseUrl}/uploads/apks/${appsDatabase[appIndex].apk_filename}`;
+        
+        res.json({ 
+            success: true, 
+            message: 'Скачивание зарегистрировано',
+            data: {
+                download_url: downloadUrl,
+                original_filename: appsDatabase[appIndex].original_apk_name,
+                downloads: appsDatabase[appIndex].downloads,
+                app_name: appsDatabase[appIndex].name
             }
-            
-            const baseUrl = `${req.protocol}://${req.get('host')}`;
-            const apkUrl = `${baseUrl}/uploads/apks/${app.apk_filename}`;
-            
-            res.json({ 
-                success: true, 
-                download_url: apkUrl,
-                original_filename: app.original_apk_name,
-                downloads: app.downloads
-            });
         });
+        
+    } catch (error) {
+        console.error('Ошибка скачивания:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Ошибка скачивания' 
+        });
+    }
+});
+
+// 6. Статистика
+app.get('/api/stats', (req, res) => {
+    try {
+        const totalApps = appsDatabase.length;
+        const totalDownloads = appsDatabase.reduce((sum, app) => sum + app.downloads, 0);
+        const totalSizeMB = appsDatabase.reduce((sum, app) => sum + app.file_size, 0) / (1024 * 1024);
+        const featuredApps = appsDatabase.filter(app => app.is_featured).length;
+        
+        // Самое популярное приложение
+        const topApp = appsDatabase.length > 0 
+            ? appsDatabase.reduce((prev, current) => (prev.downloads > current.downloads) ? prev : current)
+            : null;
+        
+        res.json({ 
+            success: true, 
+            data: {
+                total_apps: totalApps,
+                total_downloads: totalDownloads,
+                total_size_mb: totalSizeMB.toFixed(2),
+                featured_apps: featuredApps,
+                top_app: topApp ? {
+                    name: topApp.name,
+                    downloads: topApp.downloads
+                } : null
+            }
+        });
+        
+    } catch (error) {
+        console.error('Ошибка получения статистики:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Ошибка получения статистики' 
+        });
+    }
+});
+
+// 7. Категории
+app.get('/api/categories', (req, res) => {
+    const categories = [
+        { id: 1, name: 'Social', description: 'Социальные сети и мессенджеры', icon: 'fas fa-comments' },
+        { id: 2, name: 'Tools', description: 'Инструменты и утилиты', icon: 'fas fa-tools' },
+        { id: 3, name: 'Games', description: 'Игры', icon: 'fas fa-gamepad' },
+        { id: 4, name: 'Productivity', description: 'Продуктивность', icon: 'fas fa-briefcase' },
+        { id: 5, name: 'Entertainment', description: 'Развлечения', icon: 'fas fa-film' },
+        { id: 6, name: 'Education', description: 'Образование', icon: 'fas fa-graduation-cap' },
+        { id: 7, name: 'Other', description: 'Другое', icon: 'fas fa-ellipsis-h' }
+    ];
+    
+    res.json({ 
+        success: true, 
+        data: categories 
     });
+});
+
+// 8. Поиск
+app.get('/api/search', (req, res) => {
+    try {
+        const query = req.query.q || '';
+        const limit = parseInt(req.query.limit) || 10;
+        
+        if (!query.trim()) {
+            return res.json({ 
+                success: true, 
+                data: { 
+                    results: [], 
+                    query: query,
+                    count: 0 
+                } 
+            });
+        }
+        
+        const searchLower = query.toLowerCase();
+        const results = appsDatabase
+            .filter(app => 
+                app.name.toLowerCase().includes(searchLower) || 
+                app.description.toLowerCase().includes(searchLower)
+            )
+            .slice(0, limit)
+            .map(app => ({
+                id: app.id,
+                name: app.name,
+                description: app.description,
+                icon_filename: app.icon_filename,
+                downloads: app.downloads,
+                category: app.category
+            }));
+        
+        res.json({ 
+            success: true, 
+            data: { 
+                results: results, 
+                query: query,
+                count: results.length 
+            } 
+        });
+        
+    } catch (error) {
+        console.error('Ошибка поиска:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Ошибка поиска' 
+        });
+    }
 });
 
 // Статические файлы
-app.use('/uploads', express.static('uploads'));
-app.use(express.static('../public'));
+app.use('/uploads', express.static(UPLOADS_PATH));
+app.use(express.static(path.join(__dirname, '../public')));
+
+// Всё остальное → фронтенд
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, '../public', 'index.html'));
+});
+
+// Обработка ошибок
+app.use((err, req, res, next) => {
+    console.error('Необработанная ошибка:', err);
+    res.status(500).json({ 
+        success: false, 
+        error: 'Внутренняя ошибка сервера',
+        message: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+});
 
 // Запуск сервера
 app.listen(PORT, () => {
-    console.log(`Сервер BayRex APK запущен на порту ${PORT}`);
-    console.log(`Админ: @BayRex / admin123`);
-    console.log(`URL: http://localhost:${PORT}`);
+    console.log('='.repeat(60));
+    console.log(`🚀 BayRex APK Server запущен!`);
+    console.log('='.repeat(60));
+    console.log(`📍 Порт: ${PORT}`);
+    console.log(`📍 URL: http://localhost:${PORT}`);
+    console.log('='.repeat(60));
+    console.log('👑 Администратор:');
+    console.log('   Имя пользователя: @BayRex');
+    console.log('   Пароль: admin123');
+    console.log('='.repeat(60));
+    console.log('📁 Папка загрузок:', UPLOADS_PATH);
+    console.log('📊 Приложений в базе:', appsDatabase.length);
+    console.log('='.repeat(60));
 });
